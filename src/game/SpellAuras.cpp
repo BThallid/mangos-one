@@ -2568,7 +2568,7 @@ void Aura::HandleAuraModShapeshift(bool apply, bool Real)
         else
         {
             // players are a bit different since the dbc has seldomly an horde modelid
-            if (Player::TeamForRace(target->getRace()) == HORDE)
+            if (((Player*)target)->GetTeam() == HORDE)
             {
                 // get model for race ( in 2.2.4 no horde models in dbc field, only 0 in it
                 modelid = sObjectMgr.GetModelForRace(ssEntry->modelID_A, target->getRaceMask());

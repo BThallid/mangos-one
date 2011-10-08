@@ -434,6 +434,8 @@ Player::Player (WorldSession *session): Unit(), m_mover(this), m_camera(this), m
     m_GuildIdInvited = 0;
     m_ArenaTeamIdInvited = 0;
 
+    m_faction = 0;
+
     m_atLoginFlags = AT_LOGIN_NONE;
 
     mSemaphoreTeleport_Near = false;
@@ -5984,10 +5986,110 @@ uint32 Player::getFactionForRace(uint8 race)
     return rEntry->FactionID;
 }
 
+/**
+ * Gets the opposite race of the given race
+ *
+ * @param race the race to get the opposite of
+ * @returns the opposite race
+ *
+ */
+uint8 Player::getOppositeRace(uint8 race)
+{
+    switch(race)
+    {
+        case RACE_HUMAN         : return RACE_ORC;
+        case RACE_ORC           : return RACE_HUMAN;
+        case RACE_DWARF         : return RACE_UNDEAD;
+        case RACE_UNDEAD        : return RACE_DWARF;
+        case RACE_NIGHTELF      : return RACE_TAUREN;
+        case RACE_TAUREN        : return RACE_NIGHTELF;
+        case RACE_GNOME         : return RACE_TROLL;
+        case RACE_TROLL         : return RACE_GNOME;
+        case RACE_DRAENEI       : return RACE_BLOODELF;
+        case RACE_BLOODELF      : return RACE_DRAENEI;
+    }
+
+    sLog.outError("Race %u not found", uint32(race));
+    return RACE_HUMAN;
+}
+
+/**
+ * Changes the player's faction and notifies
+ *
+ * @param race the race of the player
+ *
+ */
+void Player::changeFactionToOpposite(uint8 race)
+{
+    uint8 raceto;
+
+    // determine which race to use as a base
+    if (IsTraitor())
+        raceto = race;
+    else
+        raceto = getOppositeRace(race);
+
+    // set reputation to base defaults for current race
+    m_reputationMgr.SetBaseDefaults();
+
+    // change race faction and team
+    m_faction = getFactionForRace( raceto );
+    setFactionForRace( race );
+
+    // set reputation to base defaults for new race faction
+    m_reputationMgr.SetBaseDefaults();
+
+    // send reputation to client to allow it properly work without a relogin
+    m_reputationMgr.SendInitialReputations();
+    m_reputationMgr.SendStates();
+
+    // add team languages
+    // although client doesn't allow them to be used
+    if(!IsInWorld())
+    {
+        addSpell(668, true, true, true, false);
+        addSpell(669, true, true, true, false);
+    }
+    else
+    {
+        learnSpell(668, true);
+        learnSpell(669, true);
+    }
+
+    DEBUG_LOG("PLAYER changed to opposite (Class: %u Race: %u)", uint32(getClass()), uint32(raceto));
+
+    // build message to let everyone know
+    std::string strmessage = GetName();
+    if (IsTraitor())
+        strmessage += " is a traitor and switched to the ";
+    else
+        strmessage += " is a double traitor and switched back to the ";
+
+    if (GetTeam() == ALLIANCE)
+        strmessage += "Alliance";
+    else
+        strmessage += "Horde";
+    strmessage += "!";
+
+    // send messages to all players and current player
+    sWorld.SendServerMessage(SERVER_MSG_CUSTOM, strmessage.c_str());
+    sWorld.SendServerMessage(SERVER_MSG_CUSTOM, "You are a traitor! Your reputation has been lost with your people.", this);
+}
+
 void Player::setFactionForRace(uint8 race)
 {
-    m_team = TeamForRace(race);
-    setFaction(getFactionForRace(race));
+    uint8 temprace;
+    temprace = race;
+
+    // Does the faction match for the given race; IsTraitor
+    if ( (m_faction != 0) && (m_faction != getFactionForRace(race)) )
+    {
+        temprace = getOppositeRace(race);
+    }
+
+    m_team = TeamForRace(temprace);
+    m_faction = getFactionForRace(temprace);
+    setFaction( m_faction );
 }
 
 ReputationRank Player::GetReputationRank(uint32 faction) const
@@ -14386,8 +14488,8 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder *holder )
     //"resettalents_time, trans_x, trans_y, trans_z, trans_o, transguid, extra_flags, stable_slots, at_login, zone, online, death_expire_time, taxi_path, dungeon_difficulty,"
     // 39           40                41                42                    43          44          45              46           47              48
     //"arenaPoints, totalHonorPoints, todayHonorPoints, yesterdayHonorPoints, totalKills, todayKills, yesterdayKills, chosenTitle, watchedFaction, drunk,"
-    // 49      50      51      52      53      54      55             56              57      58           59
-    //"health, power1, power2, power3, power4, power5, exploredZones, equipmentCache, ammoId, knownTitles, actionBars  FROM characters WHERE guid = '%u'", GUID_LOPART(m_guid));
+    // 49      50      51      52      53      54      55             56              57      58           59          60
+    //"health, power1, power2, power3, power4, power5, exploredZones, equipmentCache, ammoId, knownTitles, actionBars, faction  FROM characters WHERE guid = '%u'", GUID_LOPART(m_guid));
     QueryResult *result = holder->GetResult(PLAYER_LOGIN_QUERY_LOADFROM);
 
     if(!result)
@@ -14482,6 +14584,7 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder *holder )
 
     //Need to call it to initialize m_team (m_team can be calculated from race)
     //Other way is to saves m_team into characters table.
+    m_faction = fields[60].GetUInt32();
     setFactionForRace(getRace());
     SetCharm(NULL);
 
@@ -15995,7 +16098,8 @@ void Player::SaveToDB()
         "trans_x, trans_y, trans_z, trans_o, transguid, extra_flags, stable_slots, at_login, zone, "
         "death_expire_time, taxi_path, arenaPoints, totalHonorPoints, todayHonorPoints, yesterdayHonorPoints, totalKills, "
         "todayKills, yesterdayKills, chosenTitle, watchedFaction, drunk, health, power1, power2, power3, "
-        "power4, power5, exploredZones, equipmentCache, ammoId, knownTitles, actionBars) "
+        "power4, power5, exploredZones, equipmentCache, ammoId, knownTitles, actionBars, "
+        "faction) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
         "?, ?, ?, ?, ?, ?, "
         "?, ?, ?, "
@@ -16003,7 +16107,8 @@ void Player::SaveToDB()
         "?, ?, ?, ?, ?, ?, ?, ?, ?, "
         "?, ?, ?, ?, ?, ?, ?, "
         "?, ?, ?, ?, ?, ?, ?, ?, ?, "
-        "?, ?, ?, ?, ?, ?, ?) ");
+        "?, ?, ?, ?, ?, ?, ?, "
+        "?) ");
 
     uberInsert.addUInt32(GetGUIDLow());
     uberInsert.addUInt32(GetSession()->GetAccountId());
@@ -16129,6 +16234,8 @@ void Player::SaveToDB()
     uberInsert.addString(ss);
 
     uberInsert.addUInt32(uint32(GetByteValue(PLAYER_FIELD_BYTES, 2)));
+
+    uberInsert.addUInt32(uint32(m_faction));
 
     uberInsert.Execute();
 
@@ -17987,6 +18094,31 @@ bool Player::BuyItemFromVendor(ObjectGuid vendorGuid, uint32 item, uint8 count, 
             return false;
         }
 
+        // check that requirements for mounts are met
+        if (IsTraitor() && pProto->Class == ITEM_CLASS_MISC && pProto->SubClass == ITEM_SUBCLASS_JUNK_MOUNT)
+        {
+            // has required class or race
+            if ((pProto->AllowableClass & getClassMask()) == 0 || (pProto->AllowableRace & getRaceMask()) == 0)
+            {
+                SendEquipError(EQUIP_ERR_YOU_CAN_NEVER_USE_THAT_ITEM, NULL, NULL, item);
+                return false;
+            }
+
+            // has required level
+            if (getLevel() < pProto->RequiredLevel)
+            {
+                SendEquipError(EQUIP_ERR_CANT_EQUIP_LEVEL_I, NULL, NULL, item);
+                return false;
+            }
+
+            // has required skill
+            if (GetSkillValue(pProto->RequiredSkill) < pProto->RequiredSkillRank)
+            {
+                SendEquipError(EQUIP_ERR_CANT_EQUIP_SKILL, NULL, NULL, item);
+                return false;
+            }
+        }
+
         ModifyMoney(-int32(price));
 
         if (crItem->ExtendedCost)
@@ -18016,6 +18148,16 @@ bool Player::BuyItemFromVendor(ObjectGuid vendorGuid, uint32 item, uint8 count, 
     GetSession()->SendPacket(&data);
 
     SendNewItem(pItem, totalCount, true, false, false);
+
+    // special handling for traitors buying a mount, just teach it
+    if (IsTraitor() && pProto->Class == ITEM_CLASS_MISC && pProto->SubClass == ITEM_SUBCLASS_JUNK_MOUNT)
+    {
+        if (!HasSpell(pProto->Spells[1].SpellId))
+        {
+            MoveItemFromInventory(pItem->GetBagSlot(),pItem->GetSlot(), false);
+            learnSpell(pProto->Spells[1].SpellId, false);
+        }
+    }
 
     return crItem->maxcount != 0;
 }
